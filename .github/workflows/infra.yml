@@ -1,0 +1,77 @@
+name: infra
+
+# Provisions / updates the Foundry Local on Azure Local stack. kubectl access to
+# an on-prem AKS Arc cluster goes through `az connectedk8s proxy`, so this runs
+# from a GitHub-hosted runner using OIDC federated credentials.
+#
+# Manual trigger only — infrastructure changes should be deliberate.
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: "Which stage to run"
+        required: true
+        default: "deploy-foundry"
+        type: choice
+        options:
+          - install-prereqs
+          - deploy-foundry
+          - deploy-models
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  run-stage:
+    runs-on: ubuntu-latest
+    env:
+      RESOURCE_GROUP: sovereign-ai-daz
+      CLUSTER_NAME: fl-banking-aks
+      NAMESPACE: foundry-local-operator
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install CLI extensions & kubectl
+        run: |
+          az extension add --name connectedk8s --upgrade -y
+          az extension add --name k8s-extension --upgrade -y
+          az aks install-cli
+
+      - name: Open Arc proxy and run stage
+        uses: ./.github/actions/arc-proxy
+        with:
+          resource-group: ${{ env.RESOURCE_GROUP }}
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          script: |
+            case "${{ github.event.inputs.stage }}" in
+              install-prereqs)
+                az k8s-extension create \
+                  --cluster-name "$CLUSTER_NAME" --name azure-cert-manager \
+                  --resource-group "$RESOURCE_GROUP" --cluster-type connectedClusters \
+                  --extension-type Microsoft.CertManagement --scope cluster \
+                  --release-train stable \
+                  --config config.enableGatewayAPI=true \
+                  --config cert-manager.crds.keep=true ;;
+              deploy-foundry)
+                az k8s-extension create \
+                  --resource-group "$RESOURCE_GROUP" --cluster-name "$CLUSTER_NAME" \
+                  --name inference-operator --extension-type Microsoft.Foundry \
+                  --scope cluster --release-namespace "$NAMESPACE" \
+                  --cluster-type connectedClusters --auto-upgrade-minor-version true \
+                  --release-train stable \
+                  --config entraAuth.tenantId="${{ secrets.AZURE_TENANT_ID }}" \
+                  --config entraAuth.clientId="${{ secrets.FOUNDRY_ENTRA_CLIENT_ID }}"
+                kubectl get pods -n "$NAMESPACE" ;;
+              deploy-models)
+                kubectl apply -f k8s/modeldeployment-rate-forecast.yaml
+                kubectl get modeldeployment -A ;;
+            esac

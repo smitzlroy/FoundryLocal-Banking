@@ -1,0 +1,115 @@
+# Edge dashboard — runs the Next.js UI ON the AKS Arc cluster (sovereign edge).
+#
+# Everything at the edge: the dashboard pod talks to the Foundry Local
+# predictive model over in-cluster DNS (ClusterIP service, TLS on :5000), so no
+# traffic leaves the Azure Local appliance. There is no external LoadBalancer on
+# this cluster, so the UI is reached from a workstation via `kubectl port-forward`
+# over the Arc proxy (see infra/21-deploy-edge.ps1).
+#
+# Placeholders filled by infra/21-deploy-edge.ps1:
+#   __IMAGE__            e.g. flbankingacr.azurecr.io/edge/rate-dashboard:v1
+#   __FOUNDRY_ENDPOINT__ in-cluster model URL, e.g.
+#     https://rate-forecast-byo-cpu.foundry-local-operator.svc.cluster.local:5000
+#   __FOUNDRY_API_KEY__  primary-key from the rate-forecast-byo-cpu-api-keys secret
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: fl-banking
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dashboard-foundry
+  namespace: fl-banking
+type: Opaque
+stringData:
+  FOUNDRY_API_KEY: "__FOUNDRY_API_KEY__"
+  FOUNDRY_CHAT_API_KEY: "__FOUNDRY_CHAT_API_KEY__"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rate-dashboard
+  namespace: fl-banking
+  labels:
+    app.kubernetes.io/name: rate-dashboard
+    app.kubernetes.io/component: ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rate-dashboard
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rate-dashboard
+    spec:
+      imagePullSecrets:
+        - name: registry-credentials
+      containers:
+        - name: dashboard
+          image: __IMAGE__
+          ports:
+            - containerPort: 3000
+          env:
+            # Next.js standalone server binds to $HOSTNAME; force all-interfaces
+            # so kubectl port-forward (localhost:3000 inside the netns) works.
+            - name: HOSTNAME
+              value: "0.0.0.0"
+            - name: DEPLOYMENT_TARGET
+              value: "edge"
+            - name: FOUNDRY_ENDPOINT
+              value: "__FOUNDRY_ENDPOINT__"
+            - name: FOUNDRY_MODEL_ID
+              value: "rate-forecast:v1"
+            - name: FOUNDRY_DEPLOYMENT_NAME
+              value: "rate-forecast-byo-cpu"
+            - name: FOUNDRY_INSECURE_TLS
+              value: "true"
+            - name: FOUNDRY_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: dashboard-foundry
+                  key: FOUNDRY_API_KEY
+            # Act 3: generative AI analyst (phi-4-cpu) on the same edge cluster.
+            - name: FOUNDRY_CHAT_ENDPOINT
+              value: "__FOUNDRY_CHAT_ENDPOINT__"
+            - name: FOUNDRY_CHAT_MODEL
+              value: "Phi-4-generic-cpu"
+            - name: FOUNDRY_CHAT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: dashboard-foundry
+                  key: FOUNDRY_CHAT_API_KEY
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rate-dashboard
+  namespace: fl-banking
+spec:
+  selector:
+    app.kubernetes.io/name: rate-dashboard
+  ports:
+    - port: 80
+      targetPort: 3000

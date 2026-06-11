@@ -1,0 +1,64 @@
+name: model
+
+# Builds the banking rate-forecast ONNX model, validates it, packages it as an
+# OCI artifact, and pushes it to ACR. Deployment to the cluster runs through the
+# Arc proxy composite action (requires a reachable AKS Arc cluster).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "model/**"
+      - ".github/workflows/model.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write # OIDC federated login to Azure
+  contents: read
+
+env:
+  ACR_NAME: flbankingacr
+  ACR_REPOSITORY: models/rate-forecast
+  MODEL_TAG: v1
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        working-directory: model
+        run: pip install -r requirements.txt
+
+      - name: Generate synthetic data
+        working-directory: model
+        run: python generate_data.py --days 2520
+
+      - name: Train and export ONNX
+        working-directory: model
+        run: python train_export.py
+
+      - name: Validate ONNX
+        working-directory: model
+        run: python validate_onnx.py
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install ORAS
+        uses: oras-project/setup-oras@v1
+
+      - name: Package and push model to ACR
+        working-directory: model
+        run: |
+          chmod +x package_and_push.sh
+          ./package_and_push.sh ./artifacts "$ACR_NAME" "$ACR_REPOSITORY" "$MODEL_TAG"

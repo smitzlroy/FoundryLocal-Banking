@@ -1,0 +1,43 @@
+name: ci
+
+# Fast pull-request gate: validate the model pipeline end-to-end (no Azure) and
+# type-check the web app. Keeps main green without needing cluster access.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  model-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        working-directory: model
+        run: pip install -r requirements.txt
+      - name: Generate + train + validate (smoke)
+        working-directory: model
+        run: |
+          python generate_data.py --days 600
+          python train_export.py
+          python validate_onnx.py
+
+  app-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install & build
+        working-directory: app
+        run: |
+          npm install --no-audit --no-fund
+          npm run build

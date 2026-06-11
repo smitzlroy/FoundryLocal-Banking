@@ -1,0 +1,49 @@
+# Bring-your-own banking rate-forecast model (Phase 4)
+#
+# Predictive ONNX regression model, packaged as an OCI artifact in ACR and
+# pulled by the inference operator. This is the sovereign "your own model at
+# the edge" deliverable.
+#
+# Prereq: registry pull secret created from k8s/secrets/registry-credentials.example.yaml
+# Replace <ACR_NAME> with your registry (e.g. flbankingacr).
+apiVersion: foundrylocal.azure.com/v1
+kind: ModelDeployment
+metadata:
+  name: rate-forecast-byo-cpu
+  namespace: foundry-local-operator
+  labels:
+    app.kubernetes.io/name: rate-forecast-byo-cpu
+    app.kubernetes.io/component: inference
+    foundry.azure.com/hardware: cpu
+    foundry.azure.com/source: custom
+spec:
+  displayName: "Banking Rate Forecast (BYO, CPU)"
+  workloadType: predictive
+  compute: cpu
+  # Predictive BYO uses the onnx-genai runtime image family; the operator
+  # selects the predictive-cpu-byo image from (predictive + cpu + custom).
+  runtime: onnx-genai
+  model:
+    custom:
+      registry: flbankingacr.azurecr.io
+      repository: models/rate-forecast
+      tag: v2
+      credentials:
+        secretRef:
+          name: registry-credentials
+          usernameKey: username
+          passwordKey: password
+  replicas: 1
+  resources:
+    requests:
+      cpu: "1"
+      memory: "2Gi"
+    limits:
+      cpu: "2"
+      memory: "4Gi"
+  # No external LoadBalancer on this Azure Local cluster, so we keep the model
+  # in-cluster only (same as the phi-4-cpu deployment). The operator still
+  # creates the ClusterIP service rate-forecast-byo-cpu:5000 (TLS) that the
+  # dashboard pod calls via in-cluster DNS — everything stays at the edge.
+  endpoint:
+    enabled: false

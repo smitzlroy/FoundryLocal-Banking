@@ -1,0 +1,32 @@
+# Catalog model smoke test (Phase 3)
+#
+# Deploys a small catalog model on CPU using the ONNX-GenAI runtime to validate
+# that the Foundry Local inference operator is healthy before introducing the
+# bring-your-own banking model. Pick an alias that exists in your synced
+# catalog (inspect with scripts/list-catalog.ps1).
+apiVersion: foundrylocal.azure.com/v1
+kind: ModelDeployment
+metadata:
+  name: phi-4-cpu
+  namespace: foundry-local-operator
+  labels:
+    app.kubernetes.io/name: phi-4-cpu
+    app.kubernetes.io/component: inference
+    foundry.azure.com/hardware: cpu
+spec:
+  displayName: "Phi-4 Catalog Smoke Test (CPU)"
+  model:
+    catalog:
+      name: Phi-4-generic-cpu
+      version: "latest"
+  compute: cpu
+  runtime: onnx-genai
+  workloadType: generative
+  replicas: 1
+  resources:
+    requests:
+      cpu: "2"
+      memory: "8Gi"
+    limits:
+      cpu: "4"
+      memory: "16Gi"

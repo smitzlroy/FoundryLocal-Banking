@@ -1,0 +1,19 @@
+{
+  "name": "rate-forecast",
+  "task": "tabular-regression",
+  "lookback": 10,
+  "tenors": [
+    "y_1m",
+    "y_3m",
+    "y_6m",
+    "y_12m",
+    "y_24m",
+    "y_36m",
+    "y_60m",
+    "y_84m",
+    "y_120m"
+  ],
+  "n_features": 90,
+  "input_name": "input",
+  "test_mae_bps": 9.62
+}

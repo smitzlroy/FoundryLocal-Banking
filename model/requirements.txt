@@ -1,0 +1,13 @@
+# Data generation
+numpy>=1.26,<2.2
+pandas>=2.1
+
+# Training + ONNX export (predictive path)
+scikit-learn>=1.4
+skl2onnx>=1.16
+onnx>=1.16
+onnxruntime>=1.18
+
+# BYO Hugging Face -> ONNX conversion path (Olive)
+# Installed on demand in CI to keep local installs light:
+#   pip install olive-ai transformers optimum

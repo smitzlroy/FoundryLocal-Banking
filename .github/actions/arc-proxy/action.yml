@@ -1,0 +1,46 @@
+name: arc-proxy
+description: >
+  Open an `az connectedk8s proxy` connection to an on-prem AKS Arc cluster and
+  run a provided script with kubectl access against it. Cleans up the proxy on
+  exit.
+
+inputs:
+  resource-group:
+    description: Resource group of the Arc-connected cluster
+    required: true
+  cluster-name:
+    description: Name of the Arc-connected cluster
+    required: true
+  script:
+    description: Bash script to run with kubectl access
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        RESOURCE_GROUP: ${{ inputs.resource-group }}
+        CLUSTER_NAME: ${{ inputs.cluster-name }}
+      run: |
+        set -euo pipefail
+        KUBECONFIG_FILE="$(mktemp)"
+        export KUBECONFIG="$KUBECONFIG_FILE"
+
+        echo "Starting Arc proxy for $CLUSTER_NAME..."
+        az connectedk8s proxy \
+          --name "$CLUSTER_NAME" \
+          --resource-group "$RESOURCE_GROUP" \
+          --file "$KUBECONFIG_FILE" &
+        PROXY_PID=$!
+        trap 'kill $PROXY_PID 2>/dev/null || true' EXIT
+
+        # Wait for the proxy to populate the kubeconfig and become reachable.
+        for i in $(seq 1 30); do
+          if kubectl get nodes >/dev/null 2>&1; then break; fi
+          sleep 5
+        done
+        kubectl get nodes
+
+        echo "Running stage script..."
+        bash -euo pipefail -c "${{ inputs.script }}"

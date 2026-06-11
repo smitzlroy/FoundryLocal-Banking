@@ -1,0 +1,54 @@
+# Node / Next.js
+node_modules/
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+.npm/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.python-version
+*.egg-info/
+.ipynb_checkpoints/
+
+# Model artifacts (large binaries — never commit)
+model/artifacts/
+model/cache/
+*.onnx
+*.onnx_data
+*.safetensors
+*.gguf
+*.tar.gz
+*.bin
+
+# Data (only keep generators / small samples)
+model/data/*.csv
+!model/data/sample.csv
+
+# Secrets & local config
+*.env
+.env.*
+!.env.example
+**/secrets/*.yaml
+!**/secrets/*.example.yaml
+kubeconfig
+*.kubeconfig
+azure.local.json
+config/environment.json
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+~$*
+
+# Large source decks (keep generated demo slides, not the master deck)
+docs/Foundry Local - Sov AI - AI GBB.pptx
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
