@@ -1,81 +1,118 @@
 # FoundryLocal-Banking
 
-Sovereign, edge-hosted **interest-rate forecasting** for banking, running on
-**Foundry Local on Azure Local** (the Arc-enabled Kubernetes flavour of Foundry
-Local — not the consumer SDK). All inference happens on-premises; no prompts or
-data leave the cluster.
+> **Same model, same data, same UI — taken out of Azure and run whole at the edge.**
 
-This repository demonstrates the full lifecycle:
+A workshop demo for a **regulated bank** that runs a rate-forecasting model in
+Azure today and must move it on-premises for **data sovereignty** — keeping the
+model, the data, *and* the user interface running locally with no cloud
+dependency at runtime.
 
-1. **Provision** a new AKS cluster enabled by Azure Arc on Azure Local.
-2. **Deploy** the Foundry Local inference operator as an Azure Arc extension.
-3. **Catalog smoke test** — deploy a curated model (e.g. Phi-4) and call it.
-4. **Bring-your-own model** — pull an off-the-shelf Hugging Face model, convert
-   to **ONNX** with Olive (or train a compact predictive model), package it as an
-   OCI artifact, push to ACR, and serve it at the edge.
-5. **Visualize** — a Next.js dashboard renders the forecast yield curve and
-   scenario analysis, calling only the edge endpoint.
-6. **Automate** — GitHub Actions pipelines build the model, the app, and drive
-   cluster operations through `az connectedk8s proxy`.
+It runs on **Foundry Local on Azure Local** (the Arc-enabled Kubernetes flavour
+of Foundry Local — not the consumer SDK). Once deployed, all inference happens
+on-premises; no prompts or data leave the cluster.
 
-> Foundry Local on Azure Local is in **preview, by request**:
-> https://aka.ms/FoundryLocalAzure_PreviewRequest — request access first; the
-> `Microsoft.Foundry` extension install is gated on it.
+```
+ Azure (Act 1)                              Azure Local — AKS Arc (Acts 2-3)
+ ┌────────────────────────┐                 ┌──────────────────────────────────┐
+ │ Container Apps          │   ORAS → ACR    │ Foundry Local operator           │
+ │  • ONNX rate model API  │ ───────────────▶│  • rate-forecast (predictive)    │
+ │  • Next.js dashboard    │   (deploy-time  │  • Phi-4 (generative, catalog)   │
+ │ location = cloud ~37ms  │    only)        │  • Next.js dashboard (in-cluster)│
+ └────────────────────────┘                 │ location = edge ~42ms — identical│
+                                             └──────────────────────────────────┘
+```
+
+---
+
+## The demo in three acts
+
+| Act | What happens | Where | Verified |
+| --- | --- | --- | --- |
+| **Act 1 — Model in Azure today** | ONNX rate model behind FastAPI + a Next.js dashboard. The "before" baseline. | Azure Container Apps (public cloud) | `location=cloud`, ~37 ms |
+| **Act 2 — Migrate to the edge (HERO)** | The *same* `rate_forecast.onnx` packaged with ORAS → ACR, deployed to Foundry Local; UI redeployed in-cluster. | Azure Local — `fl-banking-portland` | `location=edge`, ~42 ms, **forecasts byte-identical to cloud** |
+| **Act 3 — Add intelligence** | A catalog **Phi-4** generative model (onnx-genai, CPU) powers an "Ask the AI analyst" panel via `/api/chat`. | Azure Local — `fl-banking-portland` | Real LLM answer generated **at the edge** |
+
+The point isn't raw inference speed — it's the **operational lifecycle**:
+convert → package → push → deploy → manage → repoint, with the running state
+fully sovereign.
+
+---
 
 ## Architecture
 
 ```mermaid
-flowchart TB
-    subgraph Dev["Developer / CI"]
-        GH[GitHub Actions]
-        OL[Olive / skl2onnx]
+flowchart LR
+    subgraph dev["Developer / CI"]
+        TRAIN["train_export.py<br/>scikit-learn → ONNX"]
     end
 
-    subgraph Cloud["Azure (control plane only)"]
-        ACR[(Azure Container Registry)]
-        ARC[Azure Arc]
-        ENTRA[Entra ID app reg]
+    subgraph azure["Azure — control plane &amp; Act 1 baseline"]
+        ACA["Container Apps<br/>rate API + dashboard"]
+        ACR[("Azure Container Registry<br/>flbankingacr")]
+        ARC["Azure Arc"]
     end
 
-    subgraph Local["Azure Local — sovereign / on-prem"]
-        subgraph AKS["AKS Arc cluster"]
-            OP[Foundry Local\ninference operator]
-            CAT[Catalog model\nPhi-4 CPU]
-            BYO[BYO rate-forecast\nONNX predictive]
-            ING[NGINX ingress + TLS]
-        end
-        APP[Next.js edge dashboard]
+    subgraph local["Azure Local — sovereign edge (AKS Arc: fl-banking-portland)"]
+        OP["Foundry Local<br/>inference operator"]
+        BYO["rate-forecast<br/>ONNX · predictive · CPU"]
+        PHI["Phi-4<br/>onnx-genai · generative · CPU"]
+        UI["Next.js dashboard<br/>(in-cluster)"]
     end
 
-    OL -->|ONNX artifact| ACR
-    GH -->|OIDC| ARC
-    GH -->|az connectedk8s proxy| OP
-    ACR -->|ORAS pull| BYO
+    TRAIN -->|ONNX| ACA
+    TRAIN -->|"tar.gz + ORAS"| ACR
+    ACA -.->|migrate| OP
+    ACR -->|"ORAS pull (deploy-time)"| BYO
     ARC -. manages .- OP
-    ENTRA -. JWT auth .- ING
-    APP -->|/v1 inference| ING
-    ING --> BYO
-    ING --> CAT
+    UI -->|/api/forecast| BYO
+    UI -->|/api/chat| PHI
 
-    classDef edge fill:#0b3,stroke:#0f6,color:#fff;
-    class BYO,CAT,APP edge;
+    classDef edge fill:#3a2266,stroke:#38e0c4,color:#fff;
+    classDef cloud fill:#472a7e,stroke:#ffb454,color:#fff;
+    class BYO,PHI,UI edge;
+    class ACA,ACR cloud;
 ```
 
-Everything inside **Azure Local** stays on-prem. Azure is used only for the
-control plane (Arc management, registry, identity) — inference never leaves the
-edge.
+Azure is used only as the **control plane** (Arc management, registry, identity)
+plus the Act 1 baseline. After migration, the model **and** the UI are 100% on
+Azure Local. ACR is the single cloud touchpoint at deploy time; once the
+artifacts are cached, the running state is sovereign and air-gap capable.
+
+---
+
+## Where the models come from
+
+- **Predictive rate model (the BYO hero) — we build it, not download it.**
+  [`model/generate_data.py`](model/generate_data.py) creates synthetic,
+  regulator-safe rate data (Vasicek short-rate + Nelson-Siegel curve, 2,520
+  rows — no real customer data).
+  [`model/train_export.py`](model/train_export.py) trains a compact scikit-learn
+  `HistGradientBoostingRegressor` and exports it to **ONNX (opset 17) via
+  skl2onnx** — a ~1.4 MB file, test MAE 9.62 bps. This stands in for the bank's
+  existing in-Azure model.
+- **Phi-4 (Act 3 generative) — pulled from the Foundry Local catalog**
+  (`Phi-4-generic-cpu`, served with the `onnx-genai` runtime on CPU).
+- [`model/convert_hf_to_onnx.sh`](model/convert_hf_to_onnx.sh) is an
+  *illustrative* "Hugging Face → Olive → ONNX" example only; it is **not run**
+  in the demo. Getting to ONNX is the customer's responsibility — the platform
+  value is everything downstream of a validated ONNX model.
+
+---
 
 ## Repository layout
 
 | Path | Purpose |
 | --- | --- |
-| `infra/` | PowerShell scripts: inventory, AKS Arc create, prereqs, Foundry extension, ACR, Entra |
-| `k8s/` | `ModelDeployment` manifests (catalog smoke test + BYO rate model) and secret templates |
-| `model/` | Synthetic data, train/export to ONNX, Olive HF→ONNX conversion, validation, ORAS packaging |
-| `app/` | Next.js edge dashboard (yield-curve chart, scenario sliders, edge/mock badge) |
-| `scripts/` | Catalog listing and inference helper scripts |
-| `.github/` | CI gate, model/app build pipelines, infra workflow + Arc-proxy composite action |
-| `config/` | `environment.example.json` — copy to `environment.json` and fill in |
+| `infra/` | PowerShell: inventory, AKS Arc create, Foundry prereqs/extension, ACR, Entra, **Act 1 ACA deploy** (`20-deploy-aca.ps1`), **edge deploy** (`21-deploy-edge.ps1`) |
+| `k8s/` | `ModelDeployment` manifests (BYO rate model + catalog Phi-4), dashboard Deployment/Service, secret templates |
+| `model/` | Synthetic data, train/export to ONNX, ONNX validation + dynamic-axis fix, ORAS packaging |
+| `app/` | Next.js dashboard — `/api/forecast` (predictive) and `/api/chat` (Phi-4); edge/cloud badge |
+| `azure-api/` | FastAPI + onnxruntime inference service for Act 1 (cloud) |
+| `scripts/` | Catalog listing + inference helpers |
+| `docs/` | `SPEC.docx` (technical spec, as-built v0.2) and `Foundry_Local_Sovereign_Demo_Slides.pptx` (workshop deck) |
+| `config/` | `environment.example.json` — copy to `environment.json` (gitignored) and fill in |
+
+---
 
 ## Quick start
 
@@ -89,48 +126,96 @@ python train_export.py
 python validate_onnx.py
 ```
 
-### 2. Run the dashboard locally (mock mode)
+### 2. Run the dashboard locally
 
 ```powershell
 cd app
 npm install
-npm run dev
-# http://localhost:3000 — works without a cluster (mock forecast)
+npm run dev   # http://localhost:3000
 ```
 
-### 3. Provision and deploy to Azure Local
+### 3. Act 1 — deploy the cloud baseline
 
 ```powershell
-# Fill in config/environment.json first (use infra/00-inventory.ps1 to discover IDs)
-./infra/00-inventory.ps1 -ResourceGroup sovereign-ai-daz
-./infra/01-create-aksarc.ps1
-./infra/02-install-foundry-prereqs.ps1
-./infra/10-create-entra-app.ps1
+# Fill in config/environment.json first (infra/00-inventory.ps1 discovers IDs)
 ./infra/11-create-acr.ps1
-./infra/03-deploy-foundry-local.ps1   # requires preview access
+./infra/20-deploy-aca.ps1   # builds + deploys the rate API + dashboard to Container Apps
 ```
 
-### 4. Deploy models
+### 4. Acts 2-3 — migrate to the sovereign edge
 
 ```powershell
-# Catalog smoke test
-./scripts/list-catalog.ps1
-kubectl apply -f k8s/modeldeployment-catalog-smoke.yaml
+# Package the BYO ONNX model and push to ACR as an OCI artifact
+./model/package_and_push.sh ./model/artifacts flbankingacr models/rate-forecast v2
 
-# Bring-your-own banking model
-./model/package_and_push.sh ./model/artifacts flbankingacr models/rate-forecast v1
+# Deploy on Foundry Local (BYO predictive + catalog Phi-4 + dashboard)
 kubectl apply -f k8s/secrets/registry-credentials.example.yaml   # after filling in
 kubectl apply -f k8s/modeldeployment-rate-forecast.yaml
+kubectl apply -f k8s/modeldeployment-catalog-smoke.yaml
+kubectl apply -f k8s/dashboard.yaml
 ```
 
-## The banking use case
+### 5. Test the edge (no public URL — sovereign by design)
 
-Interest-rate modeling is fundamentally **predictive/numeric**, so the BYO model
-is a compact multi-output regressor that forecasts the next-day yield curve from
-a rolling window of recent curves. It exports to a sub-megabyte ONNX file served
-as a Foundry Local `predictive` workload — fast, explainable, and ideal for a
-regulated, sovereign, low-latency edge deployment. The Hugging Face → Olive path
-is included for teams that prefer an off-the-shelf time-series model.
+```powershell
+$env:KUBECONFIG="$env:USERPROFILE\.kube\config-portland-proxy"
+az connectedk8s proxy --resource-group sovereign-ai-daz --name fl-banking-portland --file $env:KUBECONFIG
+# in a second terminal:
+kubectl port-forward -n fl-banking svc/rate-dashboard 8080:80
+# browse to http://localhost:8080  (badge shows: edge)
+```
+
+The edge dashboard is intentionally **not** exposed publicly; access is brokered
+through the Azure Arc proxy.
+
+---
+
+## Bring-your-own model config (Foundry Local)
+
+The BYO model uses the **inline custom-model** pattern
+([Microsoft Learn](https://learn.microsoft.com/en-us/azure/azure-sovereign-clouds/private/foundry-local/how-to-deploy-custom-model)).
+See [`k8s/modeldeployment-rate-forecast.yaml`](k8s/modeldeployment-rate-forecast.yaml):
+
+```yaml
+spec:
+  workloadType: predictive      # predictive + cpu selects the ONNX predictive image
+  compute: cpu
+  runtime: onnx-genai
+  model:
+    custom:                     # pulls the OCI artifact you pushed with ORAS
+      registry: flbankingacr.azurecr.io
+      repository: models/rate-forecast
+      tag: v2
+      credentials:
+        secretRef:              # K8s secret for the private ACR pull
+          name: registry-credentials
+  endpoint:
+    enabled: false              # no LoadBalancer — in-cluster ClusterIP :5000 only
+```
+
+Verify:
+
+```powershell
+kubectl get modeldeployment -n foundry-local-operator
+kubectl get pods,jobs -n foundry-local-operator    # ready when Running
+```
+
+---
+
+## Engineering notes (gotchas worth knowing)
+
+- **ONNX dynamic axes must be named.** An unnamed batch dimension fails the
+  serving sidecar's `/readyz` validation and the pod never becomes Ready. Fixed
+  by naming the batch axis (`model/fix_dynamic_axes.py`).
+- **Operator auth contract:** the serving sidecar accepts `api-key:` or
+  `Authorization: Bearer` — **not** `X-API-KEY`. The dashboard sends all three so
+  one image works in cloud and edge.
+- **Next.js standalone** binds to `$HOSTNAME` (the pod name) by default; set
+  `HOSTNAME=0.0.0.0` so it binds all interfaces behind the Service.
+- **Phi-4 on CPU** has a cold first inference (~40 s). Warm it up once before a
+  live demo.
+
+---
 
 ## CI/CD
 
@@ -141,11 +226,15 @@ is included for teams that prefer an off-the-shelf time-series model.
 | `app.yml` | push to `app/**` | `az acr build` the dashboard image |
 | `infra.yml` | manual | Cluster ops via `az connectedk8s proxy` |
 
-Required repo secrets: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
-`AZURE_SUBSCRIPTION_ID`, `FOUNDRY_ENTRA_CLIENT_ID` (OIDC federated credentials).
+---
 
 ## Status
 
-Preview-gated components (the `Microsoft.Foundry` extension) require access via
-the request form above. The model pipeline, dashboard (mock mode), and all
-scaffolding run today without it.
+- ✅ Acts 1–3 built and **verified end-to-end** (cloud baseline, edge migration
+  with identical forecasts, edge generative chat).
+- The `Microsoft.Foundry` extension is **preview, by request**:
+  <https://aka.ms/FoundryLocalAzure_PreviewRequest>.
+
+> Operational guardrail for this environment: stay in resource group
+> `sovereign-ai-daz`; only create/edit/delete `fl-banking-*` resources (plus ACR
+> `flbankingacr`) — everything else is read-only.
